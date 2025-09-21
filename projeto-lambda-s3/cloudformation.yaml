@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Projeto simples Lambda + S3 para aprendizado'
+
+Resources:
+  # Bucket onde você vai fazer upload
+  InputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "meu-bucket-input-${AWS::AccountId}"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt MinhaLambda.Arn
+
+  # Bucket onde os arquivos processados vão ficar
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "meu-bucket-output-${AWS::AccountId}"
+
+  # Permissão para Lambda acessar S3
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub "${InputBucket}/*"
+                  - !Sub "${OutputBucket}/*"
+
+  # A função Lambda que processa os arquivos
+  MinhaLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ProcessadorSimples
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Ref OutputBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+
+          s3 = boto3.client('s3')
+
+          def lambda_handler(event, context):
+              print("🚀 Lambda ativada!")
+              
+              output_bucket = os.environ['OUTPUT_BUCKET']
+              
+              for record in event['Records']:
+                  # Pega info do arquivo
+                  bucket = record['s3']['bucket']['name']
+                  key = record['s3']['object']['key']
+                  
+                  print(f"📁 Processando: {key}")
+                  
+                  # Baixa o arquivo
+                  response = s3.get_object(Bucket=bucket, Key=key)
+                  content = response['Body'].read()
+                  
+                  # Cria novo nome com timestamp
+                  timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                  new_key = f"processado_{timestamp}_{key}"
+                  
+                  # Salva no bucket de output
+                  s3.put_object(
+                      Bucket=output_bucket,
+                      Key=new_key,
+                      Body=content
+                  )
+                  
+                  print(f"✅ Arquivo processado: {new_key}")
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Sucesso!')
+              }
+
+  # Permissão para S3 chamar a Lambda
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MinhaLambda
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt InputBucket.Arn
+
+# Mostra os nomes dos buckets criados
+Outputs:
+  InputBucketName:
+    Description: 'Nome do bucket para upload'
+    Value: !Ref InputBucket
+    
+  OutputBucketName:
+    Description: 'Nome do bucket com arquivos processados'
+    Value: !Ref OutputBucket
+    
+  LambdaFunctionName:
+    Description: 'Nome da função Lambda'
+    Value: !Ref MinhaLambda
